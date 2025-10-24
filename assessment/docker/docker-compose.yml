@@ -1,76 +1,103 @@
-#!/bin/bash
-set -e
+version: '3.7'
+services:
+  wazuh.manager:
+    image: wazuh/wazuh-manager:4.7.3
+    hostname: wazuh.manager
+    restart: always
+    ports:
+      - "1514:1514/udp"
+      - "1515:1515"
+      - "514:514/udp"
+      - "55000:55000"
+    environment:
+      - INDEXER_URL=https://wazuh.indexer:9200
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=SecretPassword
+      - FILEBEAT_SSL_VERIFICATION_MODE=full
+      - SSL_CERTIFICATE_AUTHORITIES=/etc/ssl/root-ca.pem
+      - SSL_CERTIFICATE=/etc/ssl/filebeat.pem
+      - SSL_KEY=/etc/ssl/filebeat.key
+      - API_USERNAME=wazuh-wui
+      - API_PASSWORD=MyS3cr37P450r.*-
+    volumes:
+      - wazuh_api_configuration:/var/ossec/api/configuration
+      - wazuh_etc:/var/ossec/etc
+      - wazuh_logs:/var/ossec/logs
+      - wazuh_queue:/var/ossec/queue
+      - wazuh_var_multigroups:/var/ossec/var/multigroups
+      - wazuh_integrations:/var/ossec/integrations
+      - wazuh_active_response:/var/ossec/active-response/bin
+      - wazuh_agentless:/var/ossec/agentless
+      - wazuh_wodles:/var/ossec/wodles
+      - filebeat_etc:/etc/filebeat
+      - filebeat_var:/var/lib/filebeat
+    depends_on:
+      - wazuh.indexer
+    networks:
+      - wazuh
 
-# Redirect all output to a log file
-exec > >(tee /var/log/user-data.log)
-exec 2>&1
+  wazuh.indexer:
+    image: wazuh/wazuh-indexer:4.7.3
+    hostname: wazuh.indexer
+    restart: always
+    ports:
+      - "9200:9200"
+    environment:
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+      - "bootstrap.memory_lock=true"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - wazuh-indexer-data:/var/lib/wazuh-indexer
+    networks:
+      - wazuh
 
-echo "Starting EC2 setup for Wazuh using official Docker Compose..."
+  wazuh.dashboard:
+    image: wazuh/wazuh-dashboard:4.7.3
+    hostname: wazuh.dashboard
+    restart: always
+    ports:
+      - "443:5601"
+    environment:
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=SecretPassword
+      - WAZUH_API_URL=https://wazuh.manager
+      - DASHBOARD_USERNAME=kibanaserver
+      - DASHBOARD_PASSWORD=kibanaserver
+      - API_USERNAME=wazuh-wui
+      - API_PASSWORD=MyS3cr37P450r.*-
+    volumes:
+      - wazuh_dashboard_config:/usr/share/wazuh-dashboard/data/wazuh/config
+      - wazuh_dashboard_custom:/usr/share/wazuh-dashboard/plugins/wazuh/public/assets/custom
+    depends_on:
+      - wazuh.indexer
+    links:
+      - wazuh.indexer:wazuh.indexer
+      - wazuh.manager:wazuh.manager
+    networks:
+      - wazuh
 
-# Short delay to ensure network is ready
-sleep 10
+volumes:
+  wazuh_api_configuration:
+  wazuh_etc:
+  wazuh_logs:
+  wazuh_queue:
+  wazuh_var_multigroups:
+  wazuh_integrations:
+  wazuh_active_response:
+  wazuh_agentless:
+  wazuh_wodles:
+  filebeat_etc:
+  filebeat_var:
+  wazuh-indexer-data:
+  wazuh_dashboard_config:
+  wazuh_dashboard_custom:
 
-# -----------------------------
-# Update system
-# -----------------------------
-echo "Updating system packages..."
-yum update -y || { echo "Failed to update system"; exit 1; }
-
-# -----------------------------
-# Install Docker
-# -----------------------------
-echo "Installing Docker..."
-amazon-linux-extras enable docker || { echo "Failed to enable Docker extras"; exit 1; }
-yum install -y docker || { echo "Failed to install Docker"; exit 1; }
-systemctl enable --now docker || { echo "Failed to start/enable Docker"; exit 1; }
-usermod -aG docker ec2-user || { echo "Failed to add ec2-user to Docker group"; exit 1; }
-
-# -----------------------------
-# Install Docker Compose
-# -----------------------------
-echo "Installing Docker Compose..."
-DOCKER_COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep tag_name | cut -d '"' -f 4)
-curl -L "https://github.com/docker/compose/releases/download/$DOCKER_COMPOSE_VERSION/docker-compose-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)" -o /usr/local/bin/docker-compose || { echo "Failed to download Docker Compose"; exit 1; }
-chmod +x /usr/local/bin/docker-compose
-ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose
-
-# -----------------------------
-# Verify Docker and Compose
-# -----------------------------
-echo "Verifying Docker and Docker Compose..."
-/usr/bin/docker --version || { echo "Docker verification failed"; exit 1; }
-/usr/local/bin/docker-compose --version || { echo "Docker Compose verification failed"; exit 1; }
-
-# -----------------------------
-# Deploy Wazuh (Official Docker Compose)
-# -----------------------------
-echo "Deploying Wazuh..."
-WAZUH_DIR="/opt/wazuh"
-mkdir -p $WAZUH_DIR
-cd $WAZUH_DIR
-
-# Download the official single-node Docker Compose file
-curl -sL https://raw.githubusercontent.com/wazuh/wazuh-docker/main/single-node/docker-compose.yml -o docker-compose.yml || { echo "Failed to download official docker-compose.yml"; exit 1; }
-
-# Set Wazuh version to a valid Docker Hub version
-WAZUH_VERSION="4.8.0"
-
-# Update image tags to Docker Hub images
-sed -i "s|image: wazuh.manager:.*|image: wazuh/wazuh-manager:$WAZUH_VERSION|g" docker-compose.yml
-sed -i "s|image: wazuh.indexer:.*|image: wazuh/wazuh-indexer:$WAZUH_VERSION|g" docker-compose.yml
-sed -i "s|image: wazuh.dashboard:.*|image: wazuh/wazuh-dashboard:$WAZUH_VERSION|g" docker-compose.yml
-
-# Remove the problematic Dashboard config mount
-sed -i '/opensearch_dashboards.yml/d' docker-compose.yml
-
-# Start Wazuh stack
-docker-compose up -d || { echo "Failed to start Wazuh stack"; exit 1; }
-
-# -----------------------------
-# Configure basic system logging
-# -----------------------------
-echo "Configuring system logging..."
-systemctl enable rsyslog || { echo "Failed to enable rsyslog"; exit 1; }
-systemctl start rsyslog || { echo "Failed to start rsyslog"; exit 1; }
-
-echo "Wazuh deployment and system logging setup completed successfully."
+networks:
+  wazuh:
+    driver: bridge
