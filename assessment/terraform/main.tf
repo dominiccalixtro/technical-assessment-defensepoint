@@ -163,10 +163,34 @@ resource "aws_security_group" "ec2_sg" {
   vpc_id      = aws_vpc.this.id
 
   ingress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = []
+    from_port   = 1514
+    to_port     = 1514
+    protocol    = "udp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+  # Wazuh Agent Enrollment
+  ingress {
+    from_port   = 1515
+    to_port     = 1515
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+  # Wazuh Dashboard HTTPS
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  
+  # Wazuh Indexer API
+  ingress {
+    from_port   = 9200
+    to_port     = 9200
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
   egress {
